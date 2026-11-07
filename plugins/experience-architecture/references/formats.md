@@ -51,6 +51,8 @@ Viewports: `desktop` 1366×860, `laptop` 1180×760, `tablet` 820×1100, `mobile`
 
 Expectations (all optional): `url`, `path`, `h1`, `title` (exact string or `/regex/`), `text` and `notText` (in main content), `dialog` (true/false or name), `tab` (selected tab name), `pressed` (pressed or checked control name), `field` ({ "label": "value" }), `scrollY` (`">0"`, `"<100"`), `focus` (`"not-body"` or a name), `navVisible`, `activeNav` (`"Orders"` or { "region": "Sidebar", "text": "Orders" }: every nav system, or the named one, must mark it current), `historyDelta` (entries added by the step), `sameAs` (label of an earlier state: no difference in heading, dialogs, tabs, pressed controls, fields). `text` and `notText` are checked while the journey runs; re-analysing a saved log with `ea transitions` marks them not checkable, because page text is not written to disk.
 
+Each journey starts in a fresh tab. To test Back, go to the page before it first (two `goto` steps); Back from a journey's first page fails with a message saying so. After every action the runner waits until the page stops changing and nothing is marked busy, up to 4 seconds; add `waitFor` for anything slower. `text` checks see the title, every heading and the body text.
+
 Write journeys from user intent ("come back to the same list"), not from the implementation. The anomaly checks catch generic breakage; expectations encode what this product promises. Never include steps that delete, pay, send, or change accounts.
 
 ## Hand-collected log (`ea transitions`)

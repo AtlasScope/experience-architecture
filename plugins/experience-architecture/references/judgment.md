@@ -43,6 +43,8 @@ Verdicts, each with the evidence that decided it:
 - **retire**: no job, no users; redirect its URL somewhere sensible
 - **introduce**: users are assembling a job across surfaces; give the job a home
 
+Watch for **forwarding pages**: a tab or menu row whose page exists only to send users into another section. Users who click it lose the section they were in, its tabs and its menu highlight. Either the content belongs in the section they clicked from, or the row should say where it goes.
+
 Before calling two pages duplicates, check what makes similar pages legitimately separate: different audiences or permissions, a public page and a signed-in page, a page kept for search traffic, a saved view that is really a bookmark. Before calling a page unreachable, look for links built at runtime.
 
 ## Surface levels
@@ -67,6 +69,8 @@ Moving up a level (drawer to an addressable drawer, modal to page) usually fixes
 - **One job per system.** Each persistent navigation system has one job: move between sections, move within this record, act on the selection, switch context. Two systems offering the same destinations under different labels is a cause, not a style issue.
 - **Balance.** A section with one page, or one section holding half the product, says the grouping is wrong.
 - **Context.** A workspace or account switcher that silently changes what the rest of the navigation means needs that context in the URL and visible in the chrome.
+- **Several products under one address.** Some sites hold separate products (two games, a public site and an app, regional editions) that share a domain and some chrome. Name each one, its front door, how users switch between them, and which settings each owns. Test links that cross from one to the other, and check that opening one product's link never changes the reader's settings in another.
+- **Labels match destinations.** A menu label should share words with the heading of the page it opens. `ea crawl` lists the ones that do not (`nav-label-mismatch`); a renamed menu with old page headings is the usual cause.
 
 ## Is a different product structure better?
 

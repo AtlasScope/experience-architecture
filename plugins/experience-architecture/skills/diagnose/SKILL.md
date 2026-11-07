@@ -32,6 +32,8 @@ If the line above shows a command instead of a route summary, run it yourself no
 
 - Restate the complaint as what users experience. Find the app root (the package with the router; in a monorepo, the app package), the framework, and a running URL (the request, a dev script in `package.json`, or ask once). Without one, work from code and say so. If the user gave a URL or told you how to run the app, that is permission to start it and use it in the browser; stop anything you started. Otherwise ask once before starting a dev server.
 - Turn the complaint into hypotheses across layers. "Navigation feels broken" might be two navigation systems with no owner, pages that duplicate each other, URLs that do not match the product's ideas, or Back and refresh losing the user's place. Keep the list; confirm or kill each one.
+- If the repo documents its routes or navigation for agents or contributors (AGENTS.md, CLAUDE.md, docs about routes), compare those docs with the route map and list each mismatch as a finding: agents follow the docs.
+- If the site holds more than one product under one address, name each and its front door before testing (see "Several products under one address" in `judgment.md`).
 - If the map above found no routes, or the app root is elsewhere, run `ea map <app-root> --out <output-dir>/map`. Its artifacts folder is your output folder.
 
 ## 2. Size the investigation

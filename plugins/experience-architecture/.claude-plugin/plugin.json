@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "experience-architecture",
   "displayName": "Experience Architecture",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Find out why a web app's navigation, pages, links or Back button feel wrong, decide whether its structure should change, and prove it in a real browser. Three skills (Diagnose, Rethink, Verify) over a zero-dependency toolkit for route maps, browser journeys, prototypes and URL migrations. Strongest on React and Next.js.",
   "author": {
     "name": "AtlasScope"

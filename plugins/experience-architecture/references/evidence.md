@@ -50,7 +50,7 @@ Ten symptoms usually come from two or three structural causes: two navigation sy
 
 ## Where output goes
 
-Write to `.experience-architecture/<YYYY-MM-DD>-<slug>/` at the app root unless the project's CLAUDE.md or AGENTS.md names an artifacts location (for example `.artifacts/`), in which case use that. Check whether the folder is gitignored; if not, tell the user rather than editing `.gitignore` yourself. Never write inside the app's source folders.
+Write to `.experience-architecture/<YYYY-MM-DD>-<slug>/` (the user's local date: `date +%F`, not UTC) at the app root unless the project's CLAUDE.md or AGENTS.md names an artifacts location (for example `.artifacts/`), in which case use that. Check whether the folder is gitignored; if not, tell the user rather than editing `.gitignore` yourself. Never write inside the app's source folders.
 
 Name files for what they hold: `report.md`, `model.json` (from `ea map`), `journeys.json`, `journey-log.json`, `transitions.md`, `sitemap-current.mmd`, `sitemap-proposed-<option>.mmd`, `consolidation.md`, `prototype.html`, `migration.md`.
 

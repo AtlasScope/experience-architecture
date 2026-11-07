@@ -20,7 +20,7 @@ const brief = (s) => s && { url: s.url, h1: s.h1, dialogs: s.dialogs, tabs: s.ta
 export function analyzeLog(log, { accept = log.accept || [] } = {}) {
   const anomalies = []; const expectations = []; const transitions = []; const failedRuns = [];
   for (const run of log.runs || []) {
-    const entries = []; let pos = -1; let prev = null; const lastAt = new Map(); const labelled = new Map(); let skipped = 0;
+    const entries = []; const views = []; let pos = -1; let prev = null; const lastAt = new Map(); const labelled = new Map(); let skipped = 0;
     const A = (step, type, severity, expected, observed, before, after, extra = {}) => anomalies.push({ journey: run.journey, viewport: run.viewport, step: step.i, action: step.desc, type, severity, start: brief(before), expected, observed, after: brief(after), ...extra });
     for (const step of run.steps) {
       const s = step.snapshot;
@@ -37,13 +37,14 @@ export function analyzeLog(log, { accept = log.accept || [] } = {}) {
       if (step.other) { otherTab(step, s, A, labelled); continue; }
       const before = prev;
       // ---- history model ----
-      let op = 'none';
+      let op = 'none'; let leftView;
       const sameDoc = before && before.doc === s.doc;
       const dPush = sameDoc ? s.history.push - before.history.push : 0;
       const dRep = sameDoc ? s.history.replace - before.history.replace : 0;
       if (step.type === 'back' || step.type === 'forward') {
         const target = step.type === 'back' ? pos - 1 : pos + 1;
         const expected = entries[target];
+        leftView = views[target]; // the view the user last saw at the entry Back/Forward returns to
         if (expected && expected !== '?' && expected !== s.url) A(step, step.type === 'back' ? 'back-unexpected' : 'forward-unexpected', 'defect', expected, s.url, before, s);
         if (target >= 0 && target < Math.max(entries.length, s.historyLength)) pos = target;
         op = step.type;
@@ -70,8 +71,10 @@ export function analyzeLog(log, { accept = log.accept || [] } = {}) {
           const d = diffView(before, s);
           if (before.url === s.url && d.length) A(step, 'refresh-divergence', 'defect', 'refresh shows the same view', d.map((x) => `${x.what}: ${JSON.stringify(x.before)} → ${JSON.stringify(x.after)}`).join('; '), before, s, { diff: d });
         }
-        if ((step.type === 'back' || step.type === 'forward') && lastAt.has(s.url)) {
-          const was = lastAt.get(s.url);
+        // Compare with the view at the history entry Back returned to. Matching by URL alone would compare a
+        // closed overlay with the same address while it was open (an overlay that pushes the same URL).
+        if ((step.type === 'back' || step.type === 'forward') && (leftView || lastAt.has(s.url))) {
+          const was = leftView || lastAt.get(s.url);
           const d = diffView(was, s);
           if (d.length) A(step, 'restoration-divergence', 'defect', `returning to ${s.url} restores the view the user left`, d.map((x) => `${x.what}: ${JSON.stringify(x.before)} → ${JSON.stringify(x.after)}`).join('; '), was, s, { diff: d });
           if (was.scrollY > 200 && Math.abs(was.scrollY - s.scrollY) > 150) A(step, 'scroll-not-restored', 'defect', `scroll ${was.scrollY}`, `scroll ${s.scrollY}`, was, s);
@@ -104,8 +107,9 @@ export function analyzeLog(log, { accept = log.accept || [] } = {}) {
       const marked = regs.filter((r) => r.links.some((l) => l.current));
       const missing = regs.filter((r) => !r.links.some((l) => l.current) && r.links.some((l) => l.href && l.href.split('?')[0] !== '/' && s.path.startsWith(l.href.split('?')[0])));
       if (marked.length && missing.length) A(step, 'active-state-mismatch', 'defect', `every nav system marks the section for ${s.path}`, `${marked.map((r) => r.region + ' marks ' + r.links.filter((l) => l.current).map((l) => l.text).join('/')).join('; ')}; ${missing.map((r) => r.region).join(', ')} marks nothing`, before, s);
-      if (run.viewport && /mobile|^3\d\dx/.test(run.viewport) && !s.navVisible) A(step, 'no-visible-nav', 'defect', 'a way to reach other sections', 'no visible navigation region', before, s);
+      if (run.viewport && /mobile|^3\d\dx/.test(run.viewport) && (!s.contentType || /html/.test(s.contentType)) && !s.navVisible) A(step, 'no-visible-nav', 'defect', 'a way to reach other sections', 'no visible navigation region', before, s);
 
+      if (pos >= 0) { views.length = Math.min(views.length, entries.length); views[pos] = s; }
       transitions.push({ journey: run.journey, viewport: run.viewport, from: before ? stateId(before) : 'entry', to: stateId(s), action: step.desc, type: step.type, op });
       if (step.label) labelled.set(step.label, s);
       lastAt.set(s.url, s);

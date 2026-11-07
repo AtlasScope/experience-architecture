@@ -73,8 +73,12 @@
     navVisible: regions.some((r) => !r.hidden && r.links.length >= 2 && !/tablist|footer|breadcrumb/i.test(r.region)),
     navToggle: (() => { const b = [...document.querySelectorAll('button,[role=button]')].find((x) => visible(x) && (x.hasAttribute('aria-expanded') && /menu|nav|☰|≡/i.test((x.getAttribute('aria-label') || '') + x.innerText + (x.getAttribute('aria-controls') || '')) || /^(menu|☰|≡|open menu|navigation)$/i.test(text(x, 20)))); return b ? { name: text(b, 30) || 'menu', expanded: b.getAttribute('aria-expanded') } : null; })(),
     canonical: document.querySelector('link[rel=canonical]')?.href || null,
+    contentType: document.contentType,
+    noindex: /noindex/i.test(document.querySelector('meta[name=robots]')?.content || ''),
     notFound: /\b(404|not found|page not found|doesn.t exist)\b/i.test((document.title || '') + ' ' + (h1 ? h1.innerText : '')),
-    mainText: opts.text ? (main.innerText || '').replace(/\s+/g, ' ').slice(0, 3000) : undefined,
+    // Text checks look at the whole page: the title, every heading and the body text (headings often sit
+    // outside <main>). Kept in memory only; the runner drops it before writing.
+    mainText: opts.text ? [document.title, ...[...document.querySelectorAll('h1,h2,h3')].map((h) => h.innerText), document.body.innerText || ''].join(' ').replace(/\s+/g, ' ').slice(0, 12000) : undefined,
     mainTextLength: (main.innerText || '').length,
   };
 })()

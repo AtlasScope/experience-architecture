@@ -153,7 +153,11 @@ function deriveSignals(ctx) {
   const unlinked = pages.filter((r) => !(r.path === '/' || /\/(404|500|_error|not-found)$/.test(r.path) || /(^|\/)(sign-?in|log-?in|signup|sign-?up|auth|register|logout|callback)(\/|$)/i.test(r.path)) && inbound.get(r.path)?.size === 0);
   if (dynamicCount && unlinked.length > 4) {
     // many unconfirmed orphans next to runtime-built links: one lead, not a wall of them
-    sig(out, { area: 'ia', kind: 'orphan-candidate', title: `${unlinked.length} pages have no literal link pointing at them (${dynamicCount} links are built at runtime)`, evidence: unlinked.slice(0, 12).map((r) => ({ file: r.file })), pages: unlinked.map((r) => r.path), detail: `Pages: ${unlinked.map((r) => r.path).join(', ')}. Most are probably reached through links computed at runtime (sub-navs, tabs, settings menus). Confirm with a crawl before calling any of them unreachable.`, verify: 'Crawl the running app; any page still unvisited is a real orphan.' });
+    // When most links are built in code, "nothing links here" is mostly an artefact of reading the code: say so
+    // once, as a limit of the scan, and point at the crawl, which sees the real links.
+    const literal = edges.filter((e) => e.status !== 'dynamic').length;
+    if (dynamicCount >= literal || unlinked.length > pages.length * 0.3) sig(out, { area: 'ia', kind: 'scan-limit', title: `The code scan cannot tell which pages are unreachable: ${dynamicCount} links are built in code. Run "ea crawl" to find pages nothing links to`, evidence: unlinked.slice(0, 6).map((r) => ({ file: r.file })), pages: unlinked.map((r) => r.path), detail: `${unlinked.length} pages have no link written out literally in the code. With this many links built at runtime, that number says little.` });
+    else sig(out, { area: 'ia', kind: 'orphan-candidate', title: `${unlinked.length} pages have no literal link pointing at them (${dynamicCount} links are built at runtime)`, evidence: unlinked.slice(0, 12).map((r) => ({ file: r.file })), pages: unlinked.map((r) => r.path), detail: `Pages: ${unlinked.map((r) => r.path).join(', ')}. Most are probably reached through links computed at runtime (sub-navs, tabs, settings menus). Confirm with a crawl before calling any of them unreachable.`, verify: 'Crawl the running app; any page still unvisited is a real orphan.' });
   }
   for (const r of dynamicCount && unlinked.length > 4 ? [] : unlinked) {
     {
@@ -189,7 +193,10 @@ function deriveSignals(ctx) {
     if (chain.length > 2) sig(out, { area: 'routing', kind: 'redirect-chain', title: `Redirect chain: ${chain.join(' → ')}`, evidence: [{ file: r.file, line: r.line }], detail: `${chain.length - 1} hops. Each hop costs a round trip and an extra history decision; point ${r.from} straight at ${chain[chain.length - 1]}.`, verify: `curl -sI the first URL and count Location headers.` });
   }
   // auth guards that drop the destination
-  for (const g of guards.filter((x) => x.kind === 'redirect' && !x.preservesDestination)) {
+  // Only a redirect to a sign-in or access page can lose a deep link; other redirects (to settings, to a
+  // provider's connect page) are product flows.
+  const SIGN_IN = /sign-?in|log-?in|auth|access|session|welcome|waitlist|invite|onboard/i;
+  for (const g of guards.filter((x) => x.kind === 'redirect' && !x.preservesDestination && SIGN_IN.test(String(x.to)))) {
     sig(out, { area: 'routing', kind: 'deep-link-loss', title: `Guard redirect to ${g.to} does not carry the requested URL`, evidence: [{ file: g.file, line: g.line }], detail: 'A signed-out user who opens a deep link is sent to the guard target with no record of where they were going, so after signing in they land on a default page.', verify: `Signed out, open a protected deep link, sign in, and check where you land.` });
   }
 
@@ -241,6 +248,12 @@ function deriveSignals(ctx) {
     const s = scans.get(f); if (!s || !(s.useStates.length && (s.context || s.provider))) continue;
     const dyn = [...scope].filter((p) => /\/:/.test(p));
     if (!dyn.length) continue;
+    // A provider around most of the app (appearance, account, settings) is expected to keep its state
+    // between records; only state scoped to one area that holds a record page is suspicious.
+    // Keep it when the state holds what the user types or picks (drafts, selections, filters), which must not
+    // follow them to the next record.
+    const userWork = s.useStates.some((u) => /draft|text|note|input|value|form|select|editing|compose|message|body|filter|query/i.test(u.name));
+    if (scope.size >= Math.max(5, pages.length * 0.5) && !userWork) continue;
     const fixedPrefix = commonPrefix([...scope]);
     if (dyn.some((p) => p.startsWith(fixedPrefix)) && !out.some((o) => o.kind === 'state-above-entity' && o.evidence[0].file === rel(f))) {
       sig(out, { area: 'continuity', kind: 'state-above-entity', title: `${rel(f)} keeps state above ${dyn[0]}`, evidence: [{ file: rel(f), line: s.useStates[0].line }], detail: `State named ${s.useStates.map((u) => u.name).join(', ')} survives when the user switches from one ${dyn[0]} to another. Anything entity-specific in it will leak between entities.`, verify: `Enter something on one ${dyn[0]}, go to another, and check.` });
@@ -272,7 +285,9 @@ function deriveSignals(ctx) {
   const pageScans = pages.map((r) => ({ r, s: scans.get(absOf(r.file)) })).filter((x) => x.s && x.s.tokens.length >= 3 && !/\/:[^/]+$/.test(x.r.path) && !x.r.path.includes('*'));
   // components used by many pages (cards, layout primitives) say nothing about two pages being related
   const compUse = new Map(); for (const x of pageScans) for (const c of new Set(x.s.dataSig.filter((y) => y.startsWith('comp:')))) compUse.set(c, (compUse.get(c) || 0) + 1);
-  const common = (c) => compUse.get(c) > Math.max(5, pageScans.length * 0.25);
+  // Framework building blocks (links, images, suspense boundaries) are not evidence of shared purpose either.
+  const FRAMEWORK = /^comp:(Link|NavLink|Image|Head|Script|Suspense|Fragment|Outlet|Navigate|Form|Trans|Helmet|ErrorBoundary)$/;
+  const common = (c) => FRAMEWORK.test(c) || compUse.get(c) > Math.max(5, pageScans.length * 0.25);
   for (let i = 0; i < pageScans.length; i++) for (let j = i + 1; j < pageScans.length; j++) {
     const a = pageScans[i]; const b = pageScans[j];
     const textSim = jaccard(a.s.tokens, b.s.tokens);

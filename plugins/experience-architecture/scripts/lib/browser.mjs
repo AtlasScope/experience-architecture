@@ -9,8 +9,22 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PROBE = fs.readFileSync(path.join(HERE, 'probe.js'), 'utf8');
 export const RUNTIME_DIR = process.env.EA_RUNTIME_DIR || path.join(os.homedir(), '.experience-architecture', 'runtime');
 
+// Extra launch options for the Playwright copy we settled on (for example, use the installed Chrome when that
+// copy has no browser of its own).
+let LAUNCH = {};
+const CHROME = [
+  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  '/usr/bin/google-chrome', '/usr/bin/google-chrome-stable',
+  'C:/Program Files/Google/Chrome/Application/chrome.exe', 'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
+];
+const hasBrowser = (pw) => { try { const p = pw.chromium.executablePath(); return !!p && fs.existsSync(p); } catch { return false; } };
+
+// Finds a Playwright that can actually launch a browser. A project often has Playwright installed without its
+// browser downloaded (or for another version); that copy is skipped rather than reported as a reason to install
+// anything into the project. Order: this project, $EA_PLAYWRIGHT_DIR, the plugin's own runtime folder.
 export async function loadPlaywright() {
   const bases = [process.cwd(), process.env.EA_PLAYWRIGHT_DIR, RUNTIME_DIR].filter(Boolean);
+  const browserless = [];
   for (const b of bases) {
     for (const name of ['playwright', 'playwright-core', '@playwright/test']) {
       try {
@@ -18,15 +32,20 @@ export async function loadPlaywright() {
         const p = req.resolve(name);
         const mod = await import(pathToFileURL(p).href);
         const pw = mod.chromium ? mod : mod.default;
-        if (pw?.chromium) return pw;
+        if (!pw?.chromium) continue;
+        if (hasBrowser(pw)) { LAUNCH = {}; return pw; }
+        browserless.push([pw, b]);
+        break;
       } catch { /* try next */ }
     }
   }
-  const err = new Error(`Playwright not found. Options:
+  const chrome = CHROME.find((c) => fs.existsSync(c));
+  if (browserless.length && chrome) { LAUNCH = { executablePath: chrome }; return browserless[0][0]; }
+  const err = new Error(`${browserless.length ? `Playwright was found (${browserless.map((x) => x[1]).join(', ')}) but has no browser downloaded, and Google Chrome is not installed. Do not install anything into the user's project.` : 'Playwright not found.'} Options:
   1. Use your agent's browser tools with the probe script ("ea probe") and save snapshots as a journey log, then run "ea transitions <log.json>".
-  2. With the user's OK, install it once outside their project:
+  2. With the user's OK, install it once in the plugin's own folder, outside their project:
        mkdir -p "${RUNTIME_DIR}" && cd "${RUNTIME_DIR}" && npm init -y >/dev/null && npm i playwright && npx playwright install chromium
-  3. Point EA_PLAYWRIGHT_DIR at any folder whose node_modules has playwright.`);
+  3. Point EA_PLAYWRIGHT_DIR at any folder whose node_modules has playwright with its browser.`);
   err.code = 'NO_PLAYWRIGHT';
   throw err;
 }
@@ -44,7 +63,20 @@ async function settle(page) {
   try { await page.waitForLoadState('networkidle', { timeout: 2500 }); } catch { /* ignore */ }
   let last = page.url();
   for (let i = 0; i < 6; i++) { await page.waitForTimeout(120); if (page.url() === last) break; last = page.url(); }
-  await page.waitForTimeout(150);
+  // In-app navigation renders after the URL changes, and dev servers compile on first visit. Wait until the
+  // page stops changing for 300 ms and nothing is marked busy (aria-busy), up to 4 s.
+  try {
+    await page.evaluate(() => new Promise((done) => {
+      const start = Date.now(); let quietSince = Date.now();
+      const obs = new MutationObserver(() => { quietSince = Date.now(); });
+      obs.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
+      const tick = () => {
+        const busy = document.querySelector('[aria-busy="true"]');
+        if ((!busy && Date.now() - quietSince >= 300) || Date.now() - start > 4000) { obs.disconnect(); done(); } else setTimeout(tick, 60);
+      };
+      tick();
+    }));
+  } catch { /* navigated mid-wait */ }
 }
 const snap = async (page) => { try { return await page.evaluate(PROBE); } catch (e) { return { error: String(e.message || e), url: page.url() }; } };
 
@@ -54,7 +86,7 @@ const globRe = (g) => new RegExp('^' + String(g).replace(/[.+^${}()|[\]\\]/g, '\
 // One browser context. Writes (POST/PUT/PATCH/DELETE) are blocked unless allowWrites lists them, so a journey
 // or crawl cannot change data by accident; every blocked request is recorded and reported.
 async function newContext(pw, { viewport, storageState, cookies, base, allowWrites, text = true, reveal = false, browser: shared }) {
-  const browser = shared || await pw.chromium.launch({ headless: process.env.EA_HEADED ? false : true });
+  const browser = shared || await pw.chromium.launch({ headless: process.env.EA_HEADED ? false : true, ...LAUNCH });
   const vp = viewportOf(viewport);
   const { isMobile, hasTouch, ...size } = vp;
   const state = typeof storageState === 'object' ? storageState : storageState && fs.existsSync(storageState) ? storageState : undefined;
@@ -160,15 +192,18 @@ export async function crawl(start, { max = 60, viewport, storageState, cookies, 
       let x; try { x = new URL(href, origin + u); } catch { return; }
       if (x.origin !== origin) return;
       const k = x.pathname + x.search;
-      if (UNSAFE.test(k) || (incRe && !incRe.test(k)) || (excRe && excRe.test(k)) || seen.has(k)) return;
+      if (UNSAFE.test(k) || FILE_EXT.test(x.pathname) || (incRe && !incRe.test(k)) || (excRe && excRe.test(k)) || seen.has(k)) return;
       const sh = shapeOf(k) + (x.search ? '?' + [...x.searchParams.keys()].sort().join('&') : '');
       seen.add(k);
       if ((shapes.get(sh) || 0) >= perShape) return;
       shapes.set(sh, (shapes.get(sh) || 0) + 1); queue.push(k);
     }
   }
+  // Sitemap coverage, only for a signed-out crawl (signed-in pages do not belong in a sitemap).
+  let sitemap = null;
+  if (!cookies?.length && !storageState) sitemap = await readSitemap(page.request, origin).catch(() => null);
   await browser.close();
-  const findings = crawlFindings(pages, viewport, mobileMenu);
+  const findings = crawlFindings(pages, viewport, mobileMenu, sitemap);
   for (const p of pages) stripText(p.snapshot);
   return { start, origin, viewport: viewport || 'desktop', pages, unvisited: queue, mobileMenu, blockedWrites: [...new Set(blocked)], findings };
 }
@@ -176,7 +211,29 @@ export async function crawl(start, { max = 60, viewport, storageState, cookies, 
 function shingles(t) { const w = t.toLowerCase().split(/\W+/).filter(Boolean); const s = new Set(); for (let i = 0; i + 3 <= w.length; i++) s.add(w.slice(i, i + 3).join(' ')); return s; }
 function jac(a, b) { let i = 0; for (const x of a) if (b.has(x)) i++; return i / (a.size + b.size - i || 1); }
 
-export function crawlFindings(pages, viewport, mobileMenu) {
+// Feeds, sitemaps, JSON and images open in the browser too, but they are files, not pages people navigate.
+const isPage = (s) => !s?.contentType || /html/.test(s.contentType);
+const FILE_EXT = /\.(xml|rss|atom|json|txt|csv|pdf|png|jpe?g|gif|webp|svg|ico|zip|webmanifest)$/i;
+
+// Reads /sitemap.xml (and up to 10 child sitemaps from a sitemap index). Returns the set of paths, or
+// { missing: true } when the site has none.
+async function readSitemap(request, origin) {
+  const paths = new Set(); const queue = [origin + '/sitemap.xml']; let found = false; let n = 0;
+  while (queue.length && n++ < 11) {
+    const res = await request.get(queue.shift(), { timeout: 10000 });
+    if (!res.ok()) continue;
+    found = true;
+    const xml = await res.text();
+    for (const m of xml.matchAll(/<loc>\s*([^<\s]+)\s*<\/loc>/g)) {
+      let u; try { u = new URL(m[1].replace(/&amp;/g, '&')); } catch { continue; }
+      if (/<sitemapindex/i.test(xml)) queue.push(u.href); else paths.add(u.pathname.replace(/\/$/, '') || '/');
+    }
+  }
+  return found ? { paths } : { missing: true };
+}
+const words = (t) => new Set(String(t || '').toLowerCase().replace(/[^a-z0-9+ ]/g, ' ').split(/\s+/).filter((w) => w.length >= 3 && !/^(the|and|your|you|our|for|all|this|that|with|new|my)$/.test(w)));
+
+export function crawlFindings(pages, viewport, mobileMenu, sitemap) {
   const F = [];
   const ok = pages.filter((p) => p.snapshot && !p.error);
   const inbound = new Map();
@@ -197,7 +254,7 @@ export function crawlFindings(pages, viewport, mobileMenu) {
     const marked = navs.filter((r) => r.current.length);
     const unmarked = navs.filter((r) => !r.current.length && (visRegions.find((x) => x.region === r.region).links.some((l) => l.href && l.href !== '/' && p.final.startsWith(l.href.split('?')[0]))));
     if (marked.length && unmarked.length) F.push({ type: 'active-state-mismatch', severity: 'defect', url: p.final, marked, unmarked: unmarked.map((u) => u.region) });
-    if (viewport && /mobile|^3\d\dx|^4\d\dx/.test(viewport) && !p.snapshot.navVisible && !p.snapshot.navToggle) F.push({ type: 'no-visible-nav', severity: 'defect', url: p.final });
+    if (viewport && /mobile|^3\d\dx|^4\d\dx/.test(viewport) && isPage(p.snapshot) && !p.snapshot.navVisible && !p.snapshot.navToggle) F.push({ type: 'no-visible-nav', severity: 'defect', url: p.final });
   }
   // same destination in multiple regions on one page
   const dupRegions = new Map();
@@ -232,6 +289,30 @@ export function crawlFindings(pages, viewport, mobileMenu) {
     for (const p of ok) for (const r of (p.snapshot.regions || []).filter((x) => x.hidden && !/breadcrumb|tablist|footer/i.test(x.region) && x.links.length >= 3)) for (const l of r.links) if (l.href?.startsWith('/')) sections.add(l.href.split('?')[0]);
     const missing = [...sections].filter((h) => !mobileMenu.links.some((m) => m.split('?')[0] === h));
     if (missing.length) F.push({ type: 'mobile-nav-subset', severity: 'defect', url: mobileMenu.from, toggle: mobileMenu.toggle, offers: mobileMenu.links.length, missing: missing.slice(0, 20), note: 'destinations in the desktop nav (hidden at this width) that the mobile menu does not offer' });
+  }
+  // Menu labels that share no word with the heading or title of the page they open ("This Week" opening a
+  // page headed "Classes"). A judgment call: the label may be deliberate, but users read the mismatch.
+  const byPath = new Map(ok.flatMap((p) => [[p.requested.split('?')[0], p], [p.final?.split('?')[0], p]]));
+  const mism = new Map();
+  for (const p of ok) for (const r of (p.snapshot.regions || []).filter((x) => !x.hidden && x.links.length >= 3 && !/breadcrumb|tablist|footer/i.test(x.region))) for (const l of r.links) {
+    const dest = l.href && byPath.get(l.href.split('#')[0].split('?')[0]);
+    if (!dest || !dest.snapshot || dest.snapshot.notFound || !l.text) continue;
+    const head = [dest.snapshot.h1, dest.snapshot.title].filter(Boolean).join(' ');
+    const lw = words(l.text); const hw = words(head);
+    if (!lw.size || !hw.size || [...lw].some((w) => hw.has(w) || [...hw].some((h) => h.startsWith(w) || w.startsWith(h)))) continue;
+    const k = l.text + '→' + l.href;
+    if (!mism.has(k)) mism.set(k, { label: l.text, href: l.href, heading: dest.snapshot.h1 || dest.snapshot.title, region: r.region });
+  }
+  if (mism.size) F.push({ type: 'nav-label-mismatch', severity: 'judgment', count: mism.size, items: [...mism.values()].slice(0, 20), note: 'menu labels that share no word with the heading of the page they open' });
+  // Public pages the sitemap leaves out
+  if (sitemap?.missing) F.push({ type: 'no-sitemap', severity: 'info', note: 'no /sitemap.xml; search engines find pages only through links' });
+  else if (sitemap?.paths) {
+    const pub = ok.filter((p) => p.status === 200 && !p.redirects.length && isPage(p.snapshot) && !p.snapshot.notFound && !p.snapshot.noindex && !/login|signin|sign-in|auth/i.test(p.final));
+    const absent = pub.map((p) => p.final.split('?')[0].replace(/\/$/, '') || '/').filter((u) => !sitemap.paths.has(u));
+    if (absent.length) {
+      const bySection = new Map(); for (const u of absent) { const s = '/' + (u.split('/')[1] || ''); bySection.set(s, (bySection.get(s) || []).concat(u)); }
+      F.push({ type: 'not-in-sitemap', severity: 'likely', count: absent.length, sections: [...bySection.entries()].map(([section, urls]) => ({ section, pages: urls.length, examples: urls.slice(0, 3) })), note: 'public pages reachable by link that /sitemap.xml does not list' });
+    }
   }
   const emb = F.filter((f) => f.type === 'embeds');
   if (emb.length > 1) { for (const f of emb) F.splice(F.indexOf(f), 1); F.push({ type: 'embeds', severity: 'info', pairs: emb.slice(0, 10).map((f) => f.note), count: emb.length }); }
@@ -305,7 +386,12 @@ export async function runJourneys(spec, { base, viewport, screenshots, reveal } 
             case 'fill': { const [sel, val] = Array.isArray(step.fill) ? step.fill : [step.fill.selector, step.fill.value]; await (step.within ? page.locator(step.within) : page).locator(sel).first().fill(String(val), { timeout: 6000 }); break; }
             case 'select': { const [sel, val] = Array.isArray(step.select) ? step.select : [step.select.selector, step.select.value]; await (step.within ? page.locator(step.within) : page).locator(sel).first().selectOption(String(val), { timeout: 6000 }); break; }
             case 'press': await page.keyboard.press(step.press); break;
-            case 'back': await page.goBack({ waitUntil: 'domcontentloaded' }).catch(() => {}); break;
+            case 'back': {
+              await page.goBack({ waitUntil: 'domcontentloaded' }).catch(() => {});
+              // Each journey starts in a fresh tab, so Back from its first page has nowhere to go in the app.
+              if (/^about:/.test(page.url())) throw new Error('Back from the journey\'s first page leaves the app: this tab has no earlier page. Add a goto to the page before it, so Back has somewhere to return to.');
+              break;
+            }
             case 'forward': await page.goForward({ waitUntil: 'domcontentloaded' }).catch(() => {}); break;
             case 'reload': await page.reload({ waitUntil: 'domcontentloaded' }); break;
             case 'scroll': await page.evaluate((y) => window.scrollTo(0, y === 'bottom' ? document.documentElement.scrollHeight : Number(y)), step.scroll); break;
