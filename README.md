@@ -1,5 +1,7 @@
 # experience-architecture
 
+> **Moved.** This kit now lives in [AtlasScope/agent-kit](https://github.com/AtlasScope/agent-kit/tree/main/kits/experience-architecture), with its history. Install it with `claude plugin marketplace add AtlasScope/agent-kit` then `claude plugin install experience-architecture@agent-kit` (Codex: `codex plugin marketplace add AtlasScope/agent-kit` then `codex plugin add experience-architecture@agent-kit`). This repo is no longer updated.
+
 Source, test fixtures and validation for the **Experience Architecture** plugin for Claude Code, Codex and Cursor. The plugin itself is in [`plugins/experience-architecture`](plugins/experience-architecture/README.md); this repository root is also a plugin marketplace.
 
 ## Install
